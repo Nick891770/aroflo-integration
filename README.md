@@ -11,7 +11,7 @@ Automated proofreading, reporting, and invoice-readiness checking for AroFlo job
 A Python suite that connects to the AroFlo API to:
 
 1. **Proofread all completed job cards** using the LanguageTool API with a custom trade-specific dictionary -- catches spelling mistakes, grammar errors, and common shorthand misspellings before jobs are invoiced
-2. **Auto-correct** common misspellings and grammar issues directly in AroFlo, writing the corrected text back via the API
+2. **Auto-correct task descriptions** directly in AroFlo via the API, and generate a manual corrections list for timesheet notes (the AroFlo API does not support updating timesheet notes -- see [Known Limitations](#known-limitations))
 3. **Extract monthly financial metrics** including revenue, profit margins, job counts, and client segmentation breakdowns
 4. **Bulk-mark completed jobs** as "Ready to Invoice" in a single command instead of clicking through each one
 
@@ -120,7 +120,7 @@ python proofread_and_mark_ready.py          # Dry run - preview changes
 python proofread_and_mark_ready.py --apply  # Apply corrections and mark ready
 ```
 
-This fetches all completed tasks, proofreads descriptions and timesheet notes, writes corrections back to AroFlo, and marks everything as Ready to Invoice.
+This fetches all completed tasks, proofreads descriptions and timesheet notes, writes description corrections back to AroFlo, prints a manual corrections list for any timesheet note errors, and marks everything as Ready to Invoice.
 
 ## Project Structure
 
@@ -146,6 +146,10 @@ This fetches all completed tasks, proofreads descriptions and timesheet notes, w
 | `AROFLO_HOST_IP` | Your public IP address (optional, leave empty to disable) |
 | `PRIMARY_CLIENT` | Primary client name for revenue segmentation (optional) |
 | `SCORECARD_PATH` | Path to scorecard spreadsheet (optional, defaults to `scorecard.xlsx`) |
+
+## Known Limitations
+
+- **Timesheet notes are read-only via the AroFlo API.** The API accepts update requests for timesheet notes and returns a success response (`updatetotal:1`), but silently ignores the changes. Task descriptions and substatuses *can* be updated. As a workaround, the proofreader prints a manual corrections list for any timesheet note errors so you can copy-paste fixes in the AroFlo UI.
 
 ## License
 
