@@ -4,14 +4,16 @@ Proofread completed jobs, fix errors, and mark as Ready to Invoice.
 This script:
 1. Fetches completed jobs and their timesheet notes
 2. Proofreads all text for spelling/grammar errors
-3. Updates the corrected text back to AroFlo
-4. Marks jobs as Ready to Invoice
+3. Auto-fixes task descriptions via the API
+4. Prints manual correction list for timesheet notes (API doesn't support updating these)
+5. Marks jobs as Ready to Invoice
 
 Usage:
     python proofread_and_mark_ready.py           # Dry run - show what would be done
     python proofread_and_mark_ready.py --apply   # Actually apply changes
 """
 
+import difflib
 import sys
 from aroflo_connector import create_connector
 from proofreader import Proofreader
@@ -31,12 +33,23 @@ def get_timesheets_by_job(connector):
     for ts in timesheets:
         task_info = ts.get("task", {})
         job_no = task_info.get("jobnumber", "") if isinstance(task_info, dict) else ""
+        task_id = task_info.get("taskid", "") if isinstance(task_info, dict) else ""
         if job_no:
             if job_no not in by_job:
                 by_job[job_no] = []
+            user_info = ts.get("user", {})
+            user_name = ""
+            if isinstance(user_info, dict):
+                given = user_info.get("givennames", "")
+                surname = user_info.get("surname", "")
+                user_name = f"{given} {surname}".strip()
             by_job[job_no].append({
                 "timesheetid": ts.get("timesheetid"),
+                "task_id": task_id,
                 "note": ts.get("note", ""),
+                "user": user_name,
+                "workdate": ts.get("workdate", ""),
+                "starttime": ts.get("startdatetime", ""),
             })
 
     return by_job
@@ -158,23 +171,35 @@ def main():
                         corrected_note = ts["note"]
                     corrected_timesheets.append({
                         "timesheetid": ts["timesheetid"],
+                        "task_id": ts.get("task_id", ""),
                         "note": ts["note"],
                         "corrected_note": corrected_note,
                         "changed": ts["note"] != corrected_note,
+                        "user": ts.get("user", ""),
+                        "workdate": ts.get("workdate", ""),
+                        "starttime": ts.get("starttime", ""),
                     })
                 else:
                     corrected_timesheets.append({
                         "timesheetid": ts["timesheetid"],
+                        "task_id": ts.get("task_id", ""),
                         "note": "",
                         "corrected_note": "",
                         "changed": False,
+                        "user": ts.get("user", ""),
+                        "workdate": ts.get("workdate", ""),
+                        "starttime": ts.get("starttime", ""),
                     })
         else:
             corrected_timesheets = [{
                 "timesheetid": ts["timesheetid"],
+                "task_id": ts.get("task_id", ""),
                 "note": ts["note"],
                 "corrected_note": ts["note"],
                 "changed": False,
+                "user": ts.get("user", ""),
+                "workdate": ts.get("workdate", ""),
+                "starttime": ts.get("starttime", ""),
             } for ts in timesheet_entries]
 
         jobs_to_process.append({
@@ -200,47 +225,99 @@ def main():
         print("Run with --apply to fix errors and mark jobs ready")
         return 0
 
-    # Step 5: Apply corrections
-    print("\n5. Applying corrections...")
-    corrections_made = 0
+    # Step 5: Apply description corrections (API supports this)
+    print("\n5. Applying task description corrections...")
+    descriptions_fixed = 0
 
     for job in jobs_to_process:
-        if not job["has_errors"]:
+        if not job.get("description_changed") or not job["corrected_description"]:
             continue
 
         task_name = job["task_name"]
+        try:
+            print(f"   {task_name}:")
+            print(f"     BEFORE: {job['description'][:120]}")
+            print(f"     AFTER:  {job['corrected_description'][:120]}")
+            connector.update_task_description(job["task_id"], job["corrected_description"])
+            print(f"     [OK] Updated")
+            descriptions_fixed += 1
+        except Exception as e:
+            print(f"     [FAIL] {e}")
 
-        print(f"\n   --- {task_name} ---")
+    if descriptions_fixed == 0:
+        print("   No description corrections needed.")
+    else:
+        print(f"   Descriptions fixed: {descriptions_fixed}")
 
-        # Update description if changed
-        if job.get("description_changed") and job["corrected_description"]:
-            try:
-                print(f"   Description:")
-                print(f"     BEFORE: {job['description'][:120]}")
-                print(f"     AFTER:  {job['corrected_description'][:120]}")
-                connector.update_task_description(job["task_id"], job["corrected_description"])
-                print(f"   [OK] Updated description")
-                corrections_made += 1
-            except Exception as e:
-                print(f"   [FAIL] Description update: {e}")
-
-        # Update timesheet notes if changed
+    # Step 6: Show manual corrections needed for timesheet notes
+    # (AroFlo API does not support updating timesheet notes)
+    manual_corrections = []
+    for job in jobs_to_process:
+        if not job["has_errors"]:
+            continue
         for ts in job["timesheet_entries"]:
             if ts.get("changed") and ts["corrected_note"]:
-                try:
-                    print(f"   Timesheet note:")
-                    print(f"     BEFORE: {ts['note'][:120]}")
-                    print(f"     AFTER:  {ts['corrected_note'][:120]}")
-                    connector.update_timesheet_note(ts["timesheetid"], ts["corrected_note"])
-                    print(f"   [OK] Updated")
-                    corrections_made += 1
-                except Exception as e:
-                    print(f"   [FAIL] Timesheet update: {e}")
+                manual_corrections.append({
+                    "job": job["task_name"],
+                    "user": ts.get("user", "Unknown"),
+                    "workdate": ts.get("workdate", ""),
+                    "starttime": ts.get("starttime", ""),
+                    "before": ts["note"],
+                    "after": ts["corrected_note"],
+                })
 
-    print(f"\n   Corrections applied: {corrections_made}")
+    if manual_corrections:
+        print(f"\n6. MANUAL CORRECTIONS NEEDED ({len(manual_corrections)} timesheet notes)")
+        print("   (AroFlo API does not support updating timesheet notes)")
+        print("-" * 60)
 
-    # Step 6: Mark all as Ready to Invoice
-    print("\n6. Marking jobs as Ready to Invoice...")
+        for i, fix in enumerate(manual_corrections, 1):
+            # Format the date/time for easy identification
+            date_str = fix["workdate"]
+            time_str = ""
+            if fix["starttime"]:
+                # startdatetime is like "2026/01/14 10:00:00"
+                parts = fix["starttime"].split(" ")
+                if len(parts) == 2:
+                    time_str = parts[1][:5]  # "10:00"
+
+            print(f"\n   [{i}] {fix['job']}")
+            print(f"       Employee: {fix['user']}")
+            print(f"       Date: {date_str}  Start: {time_str}")
+
+            # Show word-level diffs with surrounding context
+            old_words = fix["before"].split()
+            new_words = fix["after"].split()
+            sm = difflib.SequenceMatcher(None, old_words, new_words)
+            changes = []
+            for op, i1, i2, j1, j2 in sm.get_opcodes():
+                if op == "equal":
+                    continue
+                old_phrase = " ".join(old_words[i1:i2])
+                new_phrase = " ".join(new_words[j1:j2])
+                # Add a word of context before/after
+                ctx_before = old_words[max(0, i1-1):i1]
+                ctx_after = old_words[i2:min(len(old_words), i2+1)]
+                ctx = ""
+                if ctx_before:
+                    ctx += f"...{ctx_before[0]} "
+                ctx += f'"{old_phrase}" -> "{new_phrase}"'
+                if ctx_after:
+                    ctx += f" {ctx_after[0]}..."
+                changes.append(ctx)
+
+            if changes:
+                for change in changes:
+                    print(f"       Fix: {change}")
+            else:
+                print(f"       Fix: spacing/whitespace change")
+
+        print("\n" + "-" * 60)
+    else:
+        print("\n6. No manual timesheet corrections needed.")
+
+    # Step 7: Mark all as Ready to Invoice
+    print(f"\n7. Marking jobs as Ready to Invoice...")
     marked = 0
     failed = 0
 
@@ -260,7 +337,8 @@ def main():
     print(f"\n" + "=" * 60)
     print(f"COMPLETE")
     print(f"  Jobs proofread: {len(jobs_to_process)}")
-    print(f"  Corrections made: {corrections_made}")
+    print(f"  Descriptions auto-fixed: {descriptions_fixed}")
+    print(f"  Timesheet notes to fix manually: {len(manual_corrections)}")
     print(f"  Marked ready: {marked}")
     print(f"  Failed: {failed}")
 

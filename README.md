@@ -150,6 +150,12 @@ This fetches all completed tasks, proofreads descriptions and timesheet notes, w
 ## Known Limitations
 
 - **Timesheet notes are read-only via the AroFlo API.** The API accepts update requests for timesheet notes and returns a success response (`updatetotal:1`), but silently ignores the changes. Task descriptions and substatuses *can* be updated. As a workaround, the proofreader prints a manual corrections list for any timesheet note errors so you can copy-paste fixes in the AroFlo UI.
+- **AroFlo APIv2 in development.** AroFlo has confirmed that an APIv2 is in development, though no release date has been announced. This may resolve the timesheet notes limitation and other current API restrictions.
+
+## Roadmap
+
+- [ ] Email correction list after proofread runs (SMTP integration)
+- [ ] Browser automation (Selenium/Playwright) for timesheet note edits as an alternative to manual corrections
 
 ## License
 

@@ -425,78 +425,22 @@ class AroFloConnector:
 
         raise last_error or ValueError("Request failed after all retries")
 
-    def update_timesheet_note(
-        self,
-        timesheet_id: str,
-        note: str,
-        retries: int = 3,
-    ) -> dict[str, Any]:
+    def update_timesheet_note(self, *args, **kwargs):
         """
-        Update a timesheet's note in AroFlo.
+        NOT SUPPORTED by the AroFlo API.
 
-        Args:
-            timesheet_id: The timesheet ID to update
-            note: New note text
-            retries: Number of retry attempts on failure
+        The API returns misleading success responses (updatetotal=1) but does
+        not actually persist changes to timesheet notes. Tested with multiple
+        XML structures (direct timesheets zone, nested under tasks, etc.) —
+        none work. Timesheet notes must be edited manually in the AroFlo UI.
 
-        Returns:
-            JSON response from the API
+        See proofread_and_mark_ready.py which prints a manual correction list
+        for timesheet notes instead.
         """
-        if not all([self.org_encoded, self.u_encoded, self.secret_key]):
-            raise ValueError("Missing credentials.")
-
-        # Escape XML special characters
-        note = (note
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace('"', "&quot;")
-            .replace("'", "&apos;"))
-
-        postxml = f'''<?xml version="1.0" encoding="utf-8"?>
-<aroflo>
-    <timesheet>
-        <timesheetid>{timesheet_id}</timesheetid>
-        <note>{note}</note>
-    </timesheet>
-</aroflo>'''
-
-        zone = "timesheets"
-        var_string = f"zone={zone}&postxml={urllib.parse.quote(postxml, safe='')}"
-
-        self._rate_limit()
-
-        last_error = None
-        for attempt in range(retries):
-            try:
-                headers = self._generate_auth_post(var_string, accept="text/json")
-                headers["Content-Type"] = "application/x-www-form-urlencoded"
-
-                response = self.session.post(
-                    self.base_url,
-                    headers=headers,
-                    data=var_string,
-                    timeout=30,
-                )
-
-                response.raise_for_status()
-                data = response.json()
-
-                if isinstance(data, dict):
-                    if data.get("status") == "-99999":
-                        raise ValueError(
-                            f"API Error: {data.get('statusmessage', 'Authentication failed')}"
-                        )
-
-                return data
-
-            except requests.RequestException as e:
-                last_error = e
-                if attempt < retries - 1:
-                    time.sleep(2 ** attempt)
-                continue
-
-        raise last_error or ValueError("Request failed after all retries")
+        raise NotImplementedError(
+            "AroFlo API does not support updating timesheet notes. "
+            "Edit them manually in the AroFlo UI."
+        )
 
     def get_invoices(
         self,
