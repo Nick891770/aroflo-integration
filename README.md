@@ -1,43 +1,61 @@
 # AroFlo Integration Suite
 
-Automated proofreading, reporting, and invoice-readiness checking for AroFlo job management.
+[![CI](https://github.com/Nick891770/aroflo-integration/actions/workflows/ci.yml/badge.svg)](https://github.com/Nick891770/aroflo-integration/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
 
-## The Problem
+Python automation for [AroFlo](https://www.aroflo.com/), the job-management system a lot of Australian trade businesses run on. It proofreads job cards, checks every supplier bill against the original PDF invoice, finds purchase orders waiting on a click, reconciles materials and stock, and builds the monthly scorecard.
 
-[AroFlo](https://www.aroflo.com/) is widely used by trade businesses in Australia for job management, but it lacks built-in proofreading for job notes, automated financial reporting, and bulk status updates. Job cards go to invoicing with typos in the work descriptions, monthly reporting requires manual data extraction, and marking jobs as ready-to-invoice is a repetitive click-fest through every completed task.
+It runs every night on a small self-hosted Linux server for an electrical contracting business in Brisbane, and sends its findings to Telegram for a person to act on.
 
-## The Solution
+## The problem
 
-A Python suite that connects to the AroFlo API to:
+A small trade business loses money in the gaps between systems:
 
-1. **Proofread all completed job cards** using the LanguageTool API with a custom trade-specific dictionary -- catches spelling mistakes, grammar errors, and common shorthand misspellings before jobs are invoiced
-2. **Auto-correct task descriptions** directly in AroFlo via the API, and generate a manual corrections list for timesheet notes (the AroFlo API does not support updating timesheet notes -- see [Known Limitations](#known-limitations))
-3. **Extract monthly financial metrics** including revenue, profit margins, job counts, and client segmentation breakdowns
-4. **Bulk-mark completed jobs** as "Ready to Invoice" in a single command instead of clicking through each one
+- **Supplier bills.** AroFlo's AI bill scanner reads wholesaler invoices, but it gets things wrong: ignoring a wholesaler's "per 100" price column (34 m of cable came through as $7,367 instead of $73.67), freight coded as materials, loyalty-point text stuck onto part descriptions and passed through to the client's invoice. Nobody re-checks every line by hand.
+- **Job cards.** Techs write job notes on their phones. Typos go straight onto client invoices.
+- **Purchase orders.** An approved bill with an unapproved PO is invisible unless someone goes looking.
+- **Materials.** "Are we under-charging for parts?" can't be answered without matching purchases to stock to what was billed.
+- **Reporting.** The monthly scorecard was a manual export-and-paste job.
 
-## Key Features
+## What it does
 
-- **Australian English (en-AU) support** -- uses LanguageTool's Australian English ruleset so "colour" and "realise" are not flagged
-- **Trade term dictionary** -- whitelists electrical terms (GPO, RCD, MCB, RCBO, submain, busbar, switchgear) so they are not flagged as misspellings
-- **Custom corrections for trade shorthand** -- automatically fixes common sparkie misspellings like "did'nt", "wasnt", "outler" (outlet), "conection", "andi" (and I)
-- **Prevented bad corrections** -- "power point" will not become "PowerPoint", "Haas" (CNC brand) will not become "has", plural "circuits" will not become possessive "circuit's"
-- **LanguageTool API with fallback** -- uses the free LanguageTool public API (no Java required), falls back to pyspellchecker for offline use
-- **HMAC-SHA512 API authentication** -- implements AroFlo's Postman-style HMAC signing with correct payload construction
-- **Rate limiting with exponential backoff** -- respects AroFlo's 120 req/min and 3 req/sec limits, retries on transient failures
-- **Client segmentation** -- configurable primary client tracking for revenue concentration analysis
-- **Dry-run mode** -- every destructive command defaults to preview mode, requiring `--apply` to make changes
+| Tool | What it does | Writes to AroFlo? |
+|------|--------------|-------------------|
+| `bill_review.py` | Re-checks every In Progress bill: account coding, price rises vs. last paid, line arithmetic, unlinked items. With `--pdf`, a headless Claude reads the supplier's PDF invoice on its own and compares it line by line with what the scanner entered. | Only with `--apply` (line fixes). **Never approves a bill.** |
+| `job_monitor.py` | Polls for completed jobs, proofreads them, marks them Ready to Invoice and leaves an audit note. SQLite stops anything being processed twice. | Only with `--apply` |
+| `proofread_and_mark_ready.py` | End-of-period run: proofread, fix descriptions, list manual timesheet fixes, mark ready. | Only with `--apply` |
+| `po_report.py` | Lists POs whose bill is already approved, so they're only waiting on a click. | No |
+| `materials_recon.py` | Monthly stock balance (opening + purchases − used = closing) and jobs where materials went out at or near cost. | No |
+| `stocktake.py` | Builds a count sheet pre-filled from recent purchases, then totals it. | No |
+| `main.py report / update` | Monthly revenue, profit, job count and client-concentration metrics, written to an Excel scorecard. | No |
 
-## Built With
+## Design decisions
 
-- **Python** -- core language
-- **AroFlo API** -- HMAC-SHA512 authenticated REST API for job management data
-- **LanguageTool API** -- grammar and spelling checking with Australian English support
-- **openpyxl** -- Excel spreadsheet reading/writing for scorecard updates
-- **pyspellchecker** -- offline fallback spell checker with custom word lists
+- **Read-only by default.** Every tool that can write runs as a dry run unless you pass `--apply`. Approving bills and POs stays a human decision.
+- **Two independent reads of each invoice.** The bill check doesn't trust the scanner's output. It extracts the PDF separately and compares the two, with rounding-aware tolerances (scanner stores 2dp, invoices often print 4dp).
+- **Fails loudly.** If the PDF reader is down and no bill can be verified, the nightly summary says so instead of reporting a clean night. Bill fingerprints include verification state, so bills stored during an outage are re-reported once checking works again.
+- **Only alerts on what changed.** Each bill's reviewable content is hashed, and the Telegram summary covers only new or changed bills.
+- **Learns from history.** Expected account codes and last-paid prices come from the business's own processed bills, not a hard-coded list.
 
-## Context
+## AroFlo API lessons
 
-Built for an electrical contracting business in Brisbane, Australia, to automate quality control and reporting workflows. The proofreader's trade term dictionary and custom corrections are tuned for electrical trade job descriptions but can be adapted for any trade.
+These cost real time to find, and none of them are in the docs:
+
+- **A request with no `where` clause doesn't return everything.** It returns a small recent slice, and pagination stops after page 1. No error, so the code looks right while monthly totals quietly come out at $0. Always filter by date.
+- **Timesheet notes are read-only.** Updates return `updatetotal:1` and are silently ignored. The proofreader prints a manual correction list instead.
+- **Field names differ from the docs.** Invoices use `totalex` and `lines`, not `totalexgst` and `lineitems`, and the client sits under `client.orgname`.
+- **Multi-condition date filters aren't supported**, so the upper date bound is applied client-side.
+- **Signing.** Requests are HMAC-SHA512 signed over a `+`-joined payload in the exact order used by AroFlo's Postman pre-request script. `tests/test_connector_auth.py` pins that down.
+
+## Tests
+
+```bash
+pip install -r requirements.txt pytest
+pytest -q tests
+```
+
+The tests cover bill-review rules, change detection, scorecard maths and request signing. They run offline with fake credentials, and CI runs them on every push alongside a [gitleaks](https://github.com/gitleaks/gitleaks) secrets scan.
 
 ## Setup
 
@@ -122,41 +140,25 @@ python proofread_and_mark_ready.py --apply  # Apply corrections and mark ready
 
 This fetches all completed tasks, proofreads descriptions and timesheet notes, writes description corrections back to AroFlo, prints a manual corrections list for any timesheet note errors, and marks everything as Ready to Invoice.
 
-## Project Structure
+## Project structure
 
 | File | Purpose |
 |------|---------|
-| `main.py` | CLI entry point with subcommands |
-| `aroflo_connector.py` | API authentication (HMAC-SHA512), GET/POST requests, rate limiting |
-| `data_extractor.py` | Fetches invoices, calculates revenue/profit/client metrics |
-| `proofreader.py` | Spelling/grammar checking with trade term dictionary |
-| `spreadsheet_updater.py` | Updates Excel scorecard with monthly metrics |
-| `proofread_and_mark_ready.py` | Combined workflow: proofread + fix + mark ready |
-| `mark_ready_to_invoice.py` | Standalone: bulk-mark tasks as Ready to Invoice |
-| `config.py` | Configuration and environment variable loading |
+| `aroflo_connector.py` | API auth (HMAC-SHA512), GET/POST, rate limiting (120/min, 3/sec burst) |
+| `config.py` | Environment loading; secrets can live outside the project folder |
+| `bill_review.py` | Nightly bill check (rules + PDF verification + Telegram summary) |
+| `job_monitor.py` / `database.py` | Completed-job polling with SQLite tracking |
+| `proofreader.py` | LanguageTool (en-AU) + trade dictionary + custom corrections |
+| `proofread_and_mark_ready.py` / `mark_ready_to_invoice.py` | End-of-period workflow |
+| `po_report.py` | PO approval backlog |
+| `materials_recon.py` / `stocktake.py` | Stock balance and charge-out check |
+| `data_extractor.py` / `spreadsheet_updater.py` / `main.py` | Monthly metrics and scorecard |
+| `tests/` | Offline unit tests |
 
-## Environment Variables
+## Environment variables
 
-| Variable | Description |
-|----------|-------------|
-| `AROFLO_ORG_NAME` | orgEncoded value from AroFlo admin |
-| `AROFLO_USERNAME` | uEncoded value from AroFlo admin |
-| `AROFLO_PASSWORD` | pEncoded value (API token) from AroFlo admin |
-| `AROFLO_SECRET_KEY` | Secret key for HMAC-SHA512 authentication |
-| `AROFLO_HOST_IP` | Your public IP address (optional, leave empty to disable) |
-| `PRIMARY_CLIENT` | Primary client name for revenue segmentation (optional) |
-| `SCORECARD_PATH` | Path to scorecard spreadsheet (optional, defaults to `scorecard.xlsx`) |
-
-## Known Limitations
-
-- **Timesheet notes are read-only via the AroFlo API.** The API accepts update requests for timesheet notes and returns a success response (`updatetotal:1`), but silently ignores the changes. Task descriptions and substatuses *can* be updated. As a workaround, the proofreader prints a manual corrections list for any timesheet note errors so you can copy-paste fixes in the AroFlo UI.
-- **AroFlo APIv2 in development.** AroFlo has confirmed that an APIv2 is in development, though no release date has been announced. This may resolve the timesheet notes limitation and other current API restrictions.
-
-## Roadmap
-
-- [ ] Email correction list after proofread runs (SMTP integration)
-- [ ] Browser automation (Selenium/Playwright) for timesheet note edits as an alternative to manual corrections
+See [`.env.example`](.env.example). AroFlo credentials are required. `PRIMARY_CLIENT`, `LABOUR_ONLY_CLIENTS`, `MARKUP_TARGET`, `SCORECARD_PATH` and the Telegram settings are optional.
 
 ## License
 
-This project is provided as a portfolio demonstration. See individual file headers for details.
+[MIT](LICENSE)
