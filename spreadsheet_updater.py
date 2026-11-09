@@ -1,12 +1,9 @@
 """
 Spreadsheet Updater for AroFlo Scorecard
 
-Updates a scorecard spreadsheet with monthly metrics from AroFlo API.
-Customise SPREADSHEET_PATH, MONTH_COLUMN_MAP, and METRIC_ROWS to match
-your own spreadsheet layout.
+Updates the 2026 Scorecard.xlsx with monthly metrics from AroFlo API.
 """
 
-import os
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -14,18 +11,13 @@ from typing import Optional
 
 import openpyxl
 
+from config import SPREADSHEET_PATH
 from data_extractor import MonthlyMetrics
 
 
-# Path to your scorecard spreadsheet - configure via environment or edit directly
-SPREADSHEET_PATH = os.getenv(
-    "SCORECARD_PATH",
-    os.path.join(os.path.dirname(__file__), "scorecard.xlsx"),
-)
-
 # Month column mapping based on spreadsheet structure
 # Each month spans 2 columns: Target and Actual
-# Adjust column numbers to match your spreadsheet layout
+# Months start at column D (4)
 MONTH_COLUMN_MAP = {
     11: {"name": "NOVEMBER", "target": 4, "actual": 5},   # November
     12: {"name": "DECEMBER", "target": 6, "actual": 7},   # December
@@ -41,7 +33,7 @@ MONTH_COLUMN_MAP = {
     10: {"name": "OCTOBER", "target": 26, "actual": 27},  # October
 }
 
-# Row numbers for metrics - adjust to match your spreadsheet layout
+# Row numbers for metrics (based on spreadsheet inspection)
 # LAGGING/PAST section - update Actual column only
 METRIC_ROWS = {
     # LAGGING/PAST metrics (rows that need data, not formulas)
@@ -54,18 +46,18 @@ METRIC_ROWS = {
     "average_job_value": 20,    # Average job value
 
     # LEADING/PREDICTIVE metrics
-    "primary_client_jobs": 24,      # Primary Client - # jobs
-    "primary_client_value": 26,     # Primary Client - $ value
-    "other_client_jobs": 28,        # Other Clients - # jobs
-    "other_client_value": 30,       # Other Clients - $ value
+    "primary_client_jobs": 24,           # Primary Client - # jobs
+    "primary_client_value": 26,          # Primary Client - $ value
+    "other_client_jobs": 28,   # Other Clients - # jobs
+    "other_client_value": 30,  # Other Clients - $ value
     # Row 32: Jobs Total - FORMULA (skip)
-    # Row 34: % Of Sales from primary client - FORMULA (skip)
-    # Row 36: % Of Sales from other clients - FORMULA (skip)
+    # Row 34: % Of Sales from primary client work - FORMULA (skip)
+    # Row 36: % Of Sales from outside work - FORMULA (skip)
 }
 
 
 class SpreadsheetUpdater:
-    """Updates a scorecard spreadsheet with monthly metrics."""
+    """Updates the 2026 Scorecard spreadsheet with monthly metrics."""
 
     def __init__(self, spreadsheet_path: Optional[str] = None):
         """
@@ -142,7 +134,7 @@ class SpreadsheetUpdater:
 
             print(f"\nUpdating {month_name} (column {actual_col})...")
 
-            # Update metrics
+            # Update LAGGING/PAST metrics
             updates = [
                 ("Revenue/Sales Income", METRIC_ROWS["revenue"], metrics.revenue),
                 ("Gross Profit $", METRIC_ROWS["gross_profit_dollars"], metrics.gross_profit_dollars),
@@ -216,3 +208,43 @@ def update_spreadsheet(metrics: MonthlyMetrics, month: int) -> bool:
     """
     updater = SpreadsheetUpdater()
     return updater.update_spreadsheet(metrics, month)
+
+
+if __name__ == "__main__":
+    # Test with sample data
+    from datetime import datetime
+
+    print("Spreadsheet Updater Test")
+    print("=" * 50)
+
+    # Create sample metrics
+    sample_metrics = MonthlyMetrics(
+        revenue=45000.00,
+        materials_cost=15000.00,
+        labour_cost=10000.00,
+        completed_jobs=25,
+        primary_client_jobs=10,
+        primary_client_value=20000.00,
+        other_client_jobs=15,
+        other_client_value=25000.00,
+    )
+    sample_metrics.calculate_derived_metrics()
+
+    # Get current month
+    current_month = datetime.now().month
+
+    print(f"\nSample metrics for month {current_month}:")
+    print(f"  Revenue: ${sample_metrics.revenue:,.2f}")
+    print(f"  Gross Profit: ${sample_metrics.gross_profit_dollars:,.2f}")
+    print(f"  Net Profit: ${sample_metrics.net_profit_dollars:,.2f}")
+    print(f"  Completed Jobs: {sample_metrics.completed_jobs}")
+
+    # Update spreadsheet
+    updater = SpreadsheetUpdater()
+    success = updater.update_spreadsheet(sample_metrics, current_month)
+
+    if success:
+        print("\nVerifying updated values...")
+        values = updater.get_current_values(current_month)
+        for name, value in values.items():
+            print(f"  {name}: {value}")

@@ -3,9 +3,9 @@ AroFlo Integration Suite - Main Entry Point
 
 This script provides the main interface for:
 1. Fetching monthly financial data from AroFlo API
-2. Generating financial reports with client segmentation
-3. Proofreading job cards for spelling and grammar errors
-4. Bulk-marking completed jobs as Ready to Invoice
+2. Updating the 2026 Scorecard spreadsheet
+3. Proofreading job cards
+4. Job completion monitoring with SQLite tracking
 """
 
 import argparse
@@ -18,10 +18,11 @@ from config import (
     AROFLO_ORG_NAME,
     AROFLO_SECRET_KEY,
     AROFLO_USERNAME,
-    PRIMARY_CLIENT,
 )
 from data_extractor import DataExtractor
 from proofreader import Proofreader, LANGUAGE_TOOL_AVAILABLE, SPELLCHECKER_AVAILABLE
+from spreadsheet_updater import SpreadsheetUpdater
+import job_monitor
 
 
 def check_credentials() -> bool:
@@ -37,7 +38,7 @@ def check_credentials() -> bool:
     if missing:
         print("Error: Missing API credentials!")
         print(f"Please set the following environment variables: {', '.join(missing)}")
-        print("\nYou can set them in a .env file:")
+        print("\nYou can set them in a .env file in the Aroflo directory:")
         print("  AROFLO_ORG_NAME=your_org_name")
         print("  AROFLO_USERNAME=your_username")
         print("  AROFLO_PASSWORD=your_password")
@@ -47,7 +48,7 @@ def check_credentials() -> bool:
 
 
 def cmd_update(args):
-    """Handle the 'update' command to fetch data and display metrics."""
+    """Handle the 'update' command to fetch data and update spreadsheet."""
     if not check_credentials():
         return 1
 
@@ -56,7 +57,7 @@ def cmd_update(args):
     year = args.year or now.year
     month = args.month or now.month
 
-    print(f"\nAroFlo Monthly Update")
+    print(f"\nAroFlo Scorecard Update")
     print(f"{'=' * 50}")
     print(f"Period: {calendar.month_name[month]} {year}")
 
@@ -73,18 +74,31 @@ def cmd_update(args):
     extractor = DataExtractor(connector)
     metrics = extractor.get_monthly_report(year, month)
 
-    client_label = PRIMARY_CLIENT or "Primary Client"
-    print("\nMetrics:")
-    print(f"  Revenue: ${metrics.revenue:,.2f}")
-    print(f"  Gross Profit $: ${metrics.gross_profit_dollars:,.2f}")
-    print(f"  Net Profit $: ${metrics.net_profit_dollars:,.2f}")
-    print(f"  Completed Jobs: {metrics.completed_jobs}")
-    print(f"  Average Job Value: ${metrics.average_job_value:,.2f}")
-    print(f"  {client_label} Jobs: {metrics.primary_client_jobs}")
-    print(f"  {client_label} Value: ${metrics.primary_client_value:,.2f}")
-    print(f"  Other Client Jobs: {metrics.other_client_jobs}")
-    print(f"  Other Client Value: ${metrics.other_client_value:,.2f}")
-    return 0
+    # Update spreadsheet
+    if not args.dry_run:
+        print("\nUpdating spreadsheet...")
+        updater = SpreadsheetUpdater()
+        success = updater.update_spreadsheet(metrics, month, create_backup=not args.no_backup)
+
+        if success:
+            print("\nSpreadsheet updated successfully!")
+            return 0
+        else:
+            print("\nError: Failed to update spreadsheet")
+            return 1
+    else:
+        print("\nDry run - spreadsheet not updated")
+        print("\nMetrics that would be written:")
+        print(f"  Revenue: ${metrics.revenue:,.2f}")
+        print(f"  Gross Profit $: ${metrics.gross_profit_dollars:,.2f}")
+        print(f"  Net Profit $: ${metrics.net_profit_dollars:,.2f}")
+        print(f"  Completed Jobs: {metrics.completed_jobs}")
+        print(f"  Average Job Value: ${metrics.average_job_value:,.2f}")
+        print(f"  Primary Client Jobs: {metrics.primary_client_jobs}")
+        print(f"  Primary Client Value: ${metrics.primary_client_value:,.2f}")
+        print(f"  Other Clients Jobs: {metrics.other_client_jobs}")
+        print(f"  Other Clients Value: ${metrics.other_client_value:,.2f}")
+        return 0
 
 
 def cmd_proofread(args):
@@ -217,8 +231,29 @@ def cmd_mark_ready(args):
     return 0 if failed == 0 else 1
 
 
+def cmd_monitor(args):
+    """Handle the 'monitor' command for job completion monitoring."""
+    if not check_credentials():
+        return 1
+
+    if args.stats:
+        job_monitor.show_stats()
+        return 0
+
+    if args.history:
+        job_monitor.show_history()
+        return 0
+
+    if args.poll:
+        job_monitor.run_polling(apply=args.apply, interval=args.interval)
+        return 0
+
+    result = job_monitor.run_once(apply=args.apply)
+    return 0 if "error" not in result else 1
+
+
 def cmd_report(args):
-    """Handle the 'report' command to generate a monthly report."""
+    """Handle the 'report' command to generate a monthly report without updating spreadsheet."""
     if not check_credentials():
         return 1
 
@@ -236,8 +271,6 @@ def cmd_report(args):
     extractor = DataExtractor(connector)
     metrics = extractor.get_monthly_report(year, month)
 
-    client_label = PRIMARY_CLIENT or "Primary Client"
-
     # Print report
     print(f"\n{'─' * 50}")
     print("LAGGING/PAST METRICS")
@@ -253,13 +286,13 @@ def cmd_report(args):
     print(f"\n{'─' * 50}")
     print("LEADING/PREDICTIVE METRICS")
     print(f"{'─' * 50}")
-    print(f"  {client_label} - # jobs:          {metrics.primary_client_jobs:>12}")
-    print(f"  {client_label} - $ value:         ${metrics.primary_client_value:>12,.2f}")
+    print(f"  Primary Client - # jobs:          {metrics.primary_client_jobs:>12}")
+    print(f"  Primary Client - $ value:         ${metrics.primary_client_value:>12,.2f}")
     print(f"  Other Clients - # jobs:  {metrics.other_client_jobs:>12}")
     print(f"  Other Clients - $ value: ${metrics.other_client_value:>12,.2f}")
     print(f"  Jobs Total:              ${metrics.jobs_total:>12,.2f}")
-    print(f"  % Sales from {client_label}:      {metrics.primary_client_percent:>12.2f}%")
-    print(f"  % Sales from Other:     {metrics.other_client_percent:>12.2f}%")
+    print(f"  % Sales from primary:     {metrics.primary_client_percent:>12.2f}%")
+    print(f"  % Sales from Outside:    {metrics.other_client_percent:>12.2f}%")
 
     print(f"\n{'─' * 50}")
     print("COST BREAKDOWN")
@@ -278,13 +311,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python main.py test                          # Test API connection
-  python main.py report                        # Generate report for current month
-  python main.py report --month 1 --year 2026  # Report for January 2026
-  python main.py update                        # Fetch and display current month data
-  python main.py proofread                     # Check job cards for spelling errors
-  python main.py mark-ready                    # Preview jobs to mark ready
-  python main.py mark-ready --apply            # Mark completed jobs as Ready to Invoice
+  python main.py update                    # Update spreadsheet with current month data
+  python main.py update --month 1 --year 2026  # Update January 2026
+  python main.py update --dry-run          # Preview data without updating
+  python main.py report                    # Generate report without updating
+  python main.py proofread                 # Check job cards for spelling errors
+  python main.py monitor                   # Check for new completed tasks (dry run)
+  python main.py monitor --apply           # Process new tasks and apply changes
+  python main.py monitor --poll --apply    # Continuous polling (Raspberry Pi mode)
+  python main.py monitor --stats           # Show processing statistics
+  python main.py monitor --history         # Show recent poll runs
+  python main.py test                      # Test API connection
         """,
     )
 
@@ -293,7 +330,7 @@ Examples:
     # Update command
     update_parser = subparsers.add_parser(
         "update",
-        help="Fetch data from AroFlo and display monthly metrics",
+        help="Fetch data from AroFlo and update the scorecard spreadsheet",
     )
     update_parser.add_argument(
         "--month", "-m",
@@ -306,12 +343,22 @@ Examples:
         type=int,
         help="Year (e.g., 2026). Defaults to current year.",
     )
+    update_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Fetch data but don't update spreadsheet",
+    )
+    update_parser.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="Skip creating backup of spreadsheet",
+    )
     update_parser.set_defaults(func=cmd_update)
 
     # Report command
     report_parser = subparsers.add_parser(
         "report",
-        help="Generate a detailed monthly report",
+        help="Generate a monthly report without updating spreadsheet",
     )
     report_parser.add_argument(
         "--month", "-m",
@@ -349,6 +396,33 @@ Examples:
         help="Actually apply changes (default is dry-run)",
     )
     markready_parser.set_defaults(func=cmd_mark_ready)
+
+    # Monitor command
+    monitor_parser = subparsers.add_parser(
+        "monitor",
+        help="Job completion monitor — proofread, fix, mark ready (with SQLite tracking)",
+    )
+    monitor_parser.add_argument(
+        "--apply", action="store_true",
+        help="Apply changes (default is dry run)",
+    )
+    monitor_parser.add_argument(
+        "--poll", action="store_true",
+        help="Continuous polling mode (for Raspberry Pi)",
+    )
+    monitor_parser.add_argument(
+        "--interval", type=int, default=900,
+        help="Poll interval in seconds (default: 900 = 15 min)",
+    )
+    monitor_parser.add_argument(
+        "--stats", action="store_true",
+        help="Show processing statistics",
+    )
+    monitor_parser.add_argument(
+        "--history", action="store_true",
+        help="Show recent poll run history",
+    )
+    monitor_parser.set_defaults(func=cmd_monitor)
 
     # Test command
     test_parser = subparsers.add_parser(

@@ -2,7 +2,7 @@
 AroFlo Data Extractor
 
 Extracts monthly financial data from AroFlo API and calculates metrics
-for reporting and scorecard tracking.
+for the scorecard spreadsheet.
 """
 
 import calendar
@@ -29,7 +29,7 @@ class MonthlyMetrics:
     completed_jobs: int = 0
     average_job_value: float = 0.0
 
-    # Leading/Predictive metrics (primary client segmentation)
+    # Leading/Predictive metrics
     primary_client_jobs: int = 0
     primary_client_value: float = 0.0
     other_client_jobs: int = 0
@@ -110,11 +110,11 @@ class DataExtractor:
             client_name: Name of the client
 
         Returns:
-            True if client name contains the primary client name (case-insensitive)
+            True if client name contains PRIMARY_CLIENT (case-insensitive)
         """
-        if not client_name or not PRIMARY_CLIENT:
+        if not client_name:
             return False
-        return PRIMARY_CLIENT.lower() in client_name.lower()
+        return bool(PRIMARY_CLIENT) and PRIMARY_CLIENT.lower() in client_name.lower()
 
     def _fetch_all_pages(
         self,
@@ -147,6 +147,7 @@ class DataExtractor:
             )
 
             # Handle different response formats
+            # Note: get_invoices already unwraps zoneresponse
             items = []
             if isinstance(response, dict):
                 # Check common response structures
@@ -167,7 +168,7 @@ class DataExtractor:
             all_items.extend(items)
 
             # Check if there are more pages
-            total_pages = response.get("totalpages", 1)
+            total_pages = int(response.get("totalpages", 1) or 1)
             if page >= total_pages:
                 break
 
@@ -181,24 +182,28 @@ class DataExtractor:
         """
         Process line items from an invoice to extract costs.
 
+        AroFlo API field names:
+        - totalex (not totalexgst)
+        - lines (not lineitems), each with totalex and type
+
         Args:
             invoice: Invoice data dictionary
 
         Returns:
             Tuple of (total_ex_gst, materials_cost, labour_cost)
         """
-        total_ex_gst = float(invoice.get("totalexgst", 0) or 0)
+        total_ex_gst = float(invoice.get("totalex", 0) or invoice.get("totalexgst", 0) or 0)
         materials_cost = 0.0
         labour_cost = 0.0
 
-        # Get line items from invoice
-        line_items = invoice.get("lineitems", []) or []
+        # Get line items from invoice (AroFlo uses 'lines' key)
+        line_items = invoice.get("lines", []) or invoice.get("lineitems", []) or []
         if isinstance(line_items, dict):
-            line_items = line_items.get("lineitem", []) or []
+            line_items = line_items.get("lineitem", []) or line_items.get("line", []) or []
 
         for item in line_items:
             item_type = str(item.get("type", "")).lower()
-            amount = float(item.get("totalexgst", 0) or item.get("amount", 0) or 0)
+            amount = float(item.get("totalex", 0) or item.get("totalexgst", 0) or item.get("amount", 0) or 0)
 
             if item_type in ("material", "materials", "stock"):
                 materials_cost += amount
@@ -223,15 +228,25 @@ class DataExtractor:
 
         print(f"Fetching data for {calendar.month_name[month]} {year}...")
 
-        # Fetch all invoices for the month
+        # Fetch invoices (server-side >= filter, client-side <= filter)
         print("  Fetching invoices...")
-        invoices = self._fetch_all_pages(
+        all_invoices = self._fetch_all_pages(
             self.connector.get_invoices,
             start_date,
             end_date,
         )
 
-        print(f"  Found {len(invoices)} invoices")
+        # Client-side date filter (AroFlo WHERE doesn't support multi-condition dates)
+        # AroFlo date format: YYYY/MM/DD
+        start_str = start_date.strftime('%Y/%m/%d')
+        end_str = end_date.strftime('%Y/%m/%d')
+        invoices = []
+        for inv in all_invoices:
+            inv_date = inv.get("dateinvoiced", "")
+            if inv_date and start_str <= inv_date <= end_str:
+                invoices.append(inv)
+
+        print(f"  Found {len(invoices)} invoices (filtered from {len(all_invoices)} total)")
 
         # Process invoices
         for invoice in invoices:
@@ -244,9 +259,11 @@ class DataExtractor:
             metrics.completed_jobs += 1
 
             # Determine if primary client
-            client_name = invoice.get("clientname", "") or invoice.get(
-                "client", {}
-            ).get("name", "")
+            # AroFlo nests client under client.orgname (not clientname)
+            client_obj = invoice.get("client", {})
+            client_name = client_obj.get("orgname", "") if isinstance(client_obj, dict) else ""
+            if not client_name:
+                client_name = invoice.get("clientname", "")
 
             if self._is_primary_client(client_name):
                 metrics.primary_client_jobs += 1
@@ -258,12 +275,11 @@ class DataExtractor:
         # Calculate derived metrics
         metrics.calculate_derived_metrics()
 
-        client_label = PRIMARY_CLIENT or "Primary Client"
         print(f"  Revenue: ${metrics.revenue:,.2f}")
         print(f"  Gross Profit: ${metrics.gross_profit_dollars:,.2f} ({metrics.gross_profit_percent:.1f}%)")
         print(f"  Net Profit: ${metrics.net_profit_dollars:,.2f} ({metrics.net_profit_percent:.1f}%)")
         print(f"  Completed Jobs: {metrics.completed_jobs}")
-        print(f"  {client_label} Jobs: {metrics.primary_client_jobs} (${metrics.primary_client_value:,.2f})")
+        print(f"  Primary Client Jobs: {metrics.primary_client_jobs} (${metrics.primary_client_value:,.2f})")
         print(f"  Other Clients: {metrics.other_client_jobs} (${metrics.other_client_value:,.2f})")
 
         return metrics
@@ -366,8 +382,6 @@ if __name__ == "__main__":
     now = datetime.now()
     metrics = get_monthly_report(now.year, now.month)
 
-    client_label = PRIMARY_CLIENT or "Primary Client"
-
     print("\n" + "=" * 50)
     print("Monthly Report Summary")
     print("=" * 50)
@@ -378,10 +392,10 @@ if __name__ == "__main__":
     print(f"Net Profit %: {metrics.net_profit_percent:.2f}%")
     print(f"Completed Jobs: {metrics.completed_jobs}")
     print(f"Average Job Value: ${metrics.average_job_value:,.2f}")
-    print(f"{client_label} Jobs: {metrics.primary_client_jobs}")
-    print(f"{client_label} Value: ${metrics.primary_client_value:,.2f}")
-    print(f"Other Client Jobs: {metrics.other_client_jobs}")
-    print(f"Other Client Value: ${metrics.other_client_value:,.2f}")
+    print(f"Primary Client Jobs: {metrics.primary_client_jobs}")
+    print(f"Primary Client Value: ${metrics.primary_client_value:,.2f}")
+    print(f"Other Clients Jobs: {metrics.other_client_jobs}")
+    print(f"Other Clients Value: ${metrics.other_client_value:,.2f}")
     print(f"Jobs Total: ${metrics.jobs_total:,.2f}")
-    print(f"{client_label} %: {metrics.primary_client_percent:.2f}%")
-    print(f"Other %: {metrics.other_client_percent:.2f}%")
+    print(f"Primary Client %: {metrics.primary_client_percent:.2f}%")
+    print(f"Outside %: {metrics.other_client_percent:.2f}%")

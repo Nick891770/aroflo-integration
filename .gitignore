@@ -6,3 +6,8 @@ __pycache__/
 .DS_Store
 venv/
 .venv/
+job_monitor.db
+state/
+logs/
+*.csv
+.pytest_cache/

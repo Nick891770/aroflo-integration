@@ -425,6 +425,83 @@ class AroFloConnector:
 
         raise last_error or ValueError("Request failed after all retries")
 
+    def insert_task_note(
+        self,
+        task_id: str,
+        content: str,
+        filter_type: str = "internal admin only",
+        sticky: bool = False,
+        retries: int = 3,
+    ) -> dict[str, Any]:
+        """
+        Insert a note on a task in AroFlo.
+
+        This adds to the Notes tab on the task (not timesheet/labour notes).
+
+        Args:
+            task_id: The task ID to add the note to
+            content: The note text content
+            filter_type: Note visibility filter ('internal admin only', 'internal only')
+            sticky: Whether the note should be pinned/sticky
+            retries: Number of retry attempts on failure
+
+        Returns:
+            JSON response from the API
+        """
+        if not all([self.org_encoded, self.u_encoded, self.secret_key]):
+            raise ValueError("Missing credentials.")
+
+        # Escape XML special characters in content (but use CDATA for safety)
+        content_escaped = content.replace("]]>", "]]]]><![CDATA[>")
+        sticky_str = "true" if sticky else "false"
+
+        postxml = (
+            f'<tasks><task><taskid>{task_id}</taskid>'
+            f'<notes><note>'
+            f'<content><![CDATA[{content_escaped}]]></content>'
+            f'<filter>{filter_type}</filter>'
+            f'<sticky>{sticky_str}</sticky>'
+            f'</note></notes>'
+            f'</task></tasks>'
+        )
+
+        zone = "tasks"
+        var_string = f"zone={zone}&postxml={urllib.parse.quote(postxml, safe='')}"
+
+        self._rate_limit()
+
+        last_error = None
+        for attempt in range(retries):
+            try:
+                headers = self._generate_auth_post(var_string, accept="text/json")
+                headers["Content-Type"] = "application/x-www-form-urlencoded"
+
+                response = self.session.post(
+                    self.base_url,
+                    headers=headers,
+                    data=var_string,
+                    timeout=30,
+                )
+
+                response.raise_for_status()
+                data = response.json()
+
+                if isinstance(data, dict):
+                    if data.get("status") == "-99999":
+                        raise ValueError(
+                            f"API Error: {data.get('statusmessage', 'Authentication failed')}"
+                        )
+
+                return data
+
+            except requests.RequestException as e:
+                last_error = e
+                if attempt < retries - 1:
+                    time.sleep(2 ** attempt)
+                continue
+
+        raise last_error or ValueError("Request failed after all retries")
+
     def update_timesheet_note(self, *args, **kwargs):
         """
         NOT SUPPORTED by the AroFlo API.
@@ -451,26 +528,27 @@ class AroFloConnector:
         """
         Fetch invoices from the AroFlo API.
 
+        Note: AroFlo's WHERE clause doesn't reliably support multiple date
+        conditions. We use a single >= filter and do <= filtering client-side.
+
         Args:
             start_date: Filter invoices from this date
             end_date: Filter invoices until this date
             page: Page number for pagination
 
         Returns:
-            Invoice data from the API
+            Invoice data from the API (unwrapped from zoneresponse)
         """
         params = {"page": page}
 
-        where_clauses = []
+        # AroFlo uses 'dateinvoiced' not 'invoicedate'
+        # Only use >= filter server-side; <= filtering done client-side
         if start_date:
-            where_clauses.append(f"invoicedate>={start_date.strftime('%Y-%m-%d')}")
-        if end_date:
-            where_clauses.append(f"invoicedate<={end_date.strftime('%Y-%m-%d')}")
+            params["where"] = f"and|dateinvoiced|>=|{start_date.strftime('%Y-%m-%d')}"
 
-        if where_clauses:
-            params["where"] = " AND ".join(where_clauses)
-
-        return self.request("invoices", params)
+        response = self.request("invoices", params)
+        # Unwrap zoneresponse
+        return response.get("zoneresponse", response)
 
     def get_projects(
         self,

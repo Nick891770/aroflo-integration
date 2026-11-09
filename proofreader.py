@@ -84,13 +84,13 @@ class Proofreader:
                 # Tool/Equipment brands
                 "makita", "dewalt", "metabo", "bosch", "hilti", "milwaukee", "ryobi",
                 "festool", "hikoki", "hitachi", "telstra",
-                # Australian location names (common in job descriptions)
+                # Location names
                 "wacol", "archerfield", "richlands", "rochedale", "stapylton",
                 "karalee", "donga", "dongas", "bremer", "redbank", "buranda",
                 # Trade terms
                 "grinder", "grinders", "sandblast", "sandblasting",
-                "callout", "callouts", "aroflo", "spartan",
-                "lunchroom", "fitoff", "fit-off", "reece",
+                "callout", "callouts", "aroflo", 
+                "lunchroom", "fitoff", "fit-off",
                 # Common contractions (partial words from splitting)
                 "couldn", "wouldn", "shouldn", "didn", "doesn", "isn", "aren", "weren",
                 "hasn", "haven", "hadn", "won", "don", "can", "ll", "ve", "re",
@@ -196,12 +196,12 @@ class Proofreader:
         "makita", "dewalt", "metabo", "bosch", "hilti", "milwaukee",
         "ryobi", "festool", "hikoki", "hitachi", "telstra",
         "haas", "hass",  # Haas CNC machines
-        # Australian location names (whitelisted for spell-check)
+        # Location names
         "wacol", "archerfield", "richlands", "rochedale", "stapylton",
         "karalee", "bremer", "redbank", "buranda",
         # Trade terms
         "fluoro", "fluoros", "fluro", "callout", "callouts",
-        "donga", "dongas", "spartan", "reece", "angus",
+        "donga", "dongas", 
         # Australian English
         "power point", "powerpoint",
     }
